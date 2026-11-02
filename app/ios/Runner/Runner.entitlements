@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Phase 5: push notifications (FCM via APNs). Use "production" for
+	     release builds / TestFlight. Enabling the "Push Notifications"
+	     capability in Xcode wires this file into the Runner target. -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

@@ -1,0 +1,9 @@
+# Keep the build context small and never ship secrets or local cruft.
+.env
+.venv
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+.git/

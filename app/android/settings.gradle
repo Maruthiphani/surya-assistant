@@ -1,0 +1,31 @@
+pluginManagement {
+    def flutterSdkPath = {
+        def properties = new Properties()
+        file("local.properties").withInputStream { properties.load(it) }
+        def flutterSdkPath = properties.getProperty("flutter.sdk")
+        assert flutterSdkPath != null, "flutter.sdk not set in local.properties"
+        return flutterSdkPath
+    }()
+
+    includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+plugins {
+    id "dev.flutter.flutter-plugin-loader" version "1.0.0"
+    // Bumped to 8.11.1: Flutter 3.47 requires AGP >= 8.11.1 (needs Gradle >= 8.13).
+    id "com.android.application" version "8.11.1" apply false
+    // START: FlutterFire Configuration
+    id "com.google.gms.google-services" version "4.3.15" apply false
+    // END: FlutterFire Configuration
+    // Bumped from 1.8.22: the Firebase 7.x Android SDKs are compiled with Kotlin
+    // 2.4 metadata, so the project's Kotlin plugin must be >= 2.4 to read them.
+    id "org.jetbrains.kotlin.android" version "2.4.0" apply false
+}
+
+include ":app"

@@ -1,0 +1,22 @@
+rules_version = '2';
+
+// Surya security rules.
+// A signed-in user may only read/write their own profile and their own
+// reminders. Everything else is denied by default. This replaces the temporary
+// "test mode" rules used during Firebase setup (CLAUDE.md §5).
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // users/{uid}
+    match /users/{userId} {
+      allow read, write: if request.auth != null
+                         && request.auth.uid == userId;
+
+      // users/{uid}/reminders/{reminderId}
+      match /reminders/{reminderId} {
+        allow read, write: if request.auth != null
+                           && request.auth.uid == userId;
+      }
+    }
+  }
+}

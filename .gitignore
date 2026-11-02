@@ -1,0 +1,17 @@
+# Repo-root ignores. Each subproject (app/, backend/) also has its own.
+
+# Secrets — belt and braces; keys must never be committed (CLAUDE.md §2)
+.env
+*.env
+!.env.example
+*.keystore
+google-services.json
+GoogleService-Info.plist
+service-account*.json
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.iml
