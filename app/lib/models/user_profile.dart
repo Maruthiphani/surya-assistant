@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../l10n/app_language.dart';
+
 /// The user document at `users/{uid}` (CLAUDE.md §4).
 ///
 /// Currently just the chosen assistant name + creation time. Pure data class.
@@ -8,6 +10,8 @@ class UserProfile {
     required this.uid,
     required this.assistantName,
     this.defaultRadiusMeters = defaultRadius,
+    this.preferredLanguage = AppLanguage.english,
+    this.familyId,
     this.createdAt,
   });
 
@@ -20,6 +24,15 @@ class UserProfile {
   /// Radius (metres) pre-filled for new reminders. User-editable in Settings
   /// (Phase 5); overridable per-reminder on the add screen.
   final int defaultRadiusMeters;
+
+  /// Language Hanu speaks/listens/renders in (CLAUDE.md Phase 9). Default
+  /// English; backward compatible (an absent field reads as English).
+  final AppLanguage preferredLanguage;
+
+  /// The family this user belongs to, if any (CLAUDE.md §10, Phase 7a).
+  /// Null for solo users — the family layer is entirely additive, so every
+  /// existing single-user flow keeps working with this unset.
+  final String? familyId;
 
   final DateTime? createdAt;
 
@@ -42,6 +55,11 @@ class UserProfile {
               : defaultAssistantName,
       defaultRadiusMeters:
           (radius != null && radius > 0) ? radius : defaultRadius,
+      preferredLanguage:
+          AppLanguage.fromCode(data['preferredLanguage'] as String?),
+      familyId: (data['familyId'] as String?)?.trim().isNotEmpty == true
+          ? (data['familyId'] as String).trim()
+          : null,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
     );
   }

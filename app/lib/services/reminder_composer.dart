@@ -108,18 +108,23 @@ class ReminderComposer {
       locationType: type,
       locationQuery: type == LocationType.query ? i.locationText : null,
       remindAt: i.remindAt,
+      recurrence: i.recurrence,
       status: ReminderStatus.active,
     );
   }
 
   Reminder _draftFromIntent(ParsedIntent i) {
-    final isQuery = i.locationType == LocationType.query;
+    // Time-only reminder (e.g. a birthday) has no location text.
+    final hasLoc = i.locationText != null && i.locationText!.trim().isNotEmpty;
+    final type = i.locationType ?? LocationType.query;
+    final isQuery = type == LocationType.query;
     return Reminder(
       task: i.task!,
-      locationName: i.locationText!,
-      locationType: i.locationType!,
-      locationQuery: isQuery ? i.locationText : null,
+      locationName: hasLoc ? i.locationText! : '',
+      locationType: type,
+      locationQuery: (hasLoc && isQuery) ? i.locationText : null,
       remindAt: i.remindAt,
+      recurrence: i.recurrence,
       status: ReminderStatus.active,
     );
   }

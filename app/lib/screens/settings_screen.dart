@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
+import '../l10n/app_language.dart';
 import '../models/user_profile.dart';
 import '../providers/providers.dart';
+import 'family_screen.dart';
 import 'paywall_screen.dart';
 
 /// Settings (CLAUDE.md Phase 5): rename the assistant and set the default
@@ -65,7 +67,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Settings saved.')));
+        ..showSnackBar(
+            SnackBar(content: Text(ref.read(stringsProvider).settingsSaved)));
       Navigator.of(context).pop();
     } catch (_) {
       if (mounted) {
@@ -82,9 +85,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   @override
   Widget build(BuildContext context) {
     final profileAsync = ref.watch(userProfileProvider);
+    final s = ref.watch(stringsProvider);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(s.settingsTitle)),
       body: SafeArea(
         child: profileAsync.when(
           loading: () => const Center(child: CircularProgressIndicator()),
@@ -101,33 +105,38 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(24),
                 children: [
-                  Text('Assistant',
+                  Text(s.assistantSection,
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _nameController,
                     textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'Assistant name',
+                    decoration: InputDecoration(
+                      labelText: s.assistantNameLabel,
                       helperText: 'Used in confirmations and notifications.',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                     ),
                     validator: (v) =>
                         (v == null || v.trim().isEmpty) ? 'Enter a name' : null,
                   ),
                   const SizedBox(height: 28),
-                  Text('Reminders',
+                  Text(s.languageSection,
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  _LanguageTile(),
+                  const SizedBox(height: 28),
+                  Text(s.remindersSection,
                       style: Theme.of(context).textTheme.titleMedium),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _radiusController,
                     keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Default radius (metres)',
+                    decoration: InputDecoration(
+                      labelText: s.defaultRadiusLabel,
                       helperText:
                           'Pre-filled for new reminders. You can change it per '
                           'reminder.',
-                      border: OutlineInputBorder(),
+                      border: const OutlineInputBorder(),
                     ),
                     validator: (v) {
                       final n = int.tryParse((v ?? '').trim());
@@ -135,6 +144,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                       return null;
                     },
                   ),
+                  const SizedBox(height: 28),
+                  Text('Family',
+                      style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  _FamilyTile(),
                   const SizedBox(height: 28),
                   Text('Subscription',
                       style: Theme.of(context).textTheme.titleMedium),
@@ -152,12 +166,79 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             height: 18,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
-                        : const Text('Save'),
+                        : Text(s.save),
                   ),
                 ],
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+/// Language picker — the language Hanu speaks, listens, and renders in
+/// (CLAUDE.md Phase 9). Writes immediately to the profile so the whole app
+/// (via `appLanguageProvider`/`stringsProvider`) updates live.
+class _LanguageTile extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final current = ref.watch(appLanguageProvider);
+    final s = ref.watch(stringsProvider);
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        child: Row(
+          children: [
+            const Icon(Icons.translate),
+            const SizedBox(width: 16),
+            Expanded(child: Text(s.languageLabel)),
+            DropdownButton<AppLanguage>(
+              value: current,
+              underline: const SizedBox.shrink(),
+              items: AppLanguage.values
+                  .map((l) =>
+                      DropdownMenuItem(value: l, child: Text(l.displayName)))
+                  .toList(),
+              onChanged: (l) async {
+                final uid = ref.read(currentUidProvider);
+                if (l == null || uid == null) return;
+                await ref
+                    .read(userRepositoryProvider)
+                    .setPreferredLanguage(uid, l);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Shows the user's family (or "Not in a family") and opens the Family screen
+/// to create/join/manage it (CLAUDE.md §10, Phase 7a).
+class _FamilyTile extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final familyAsync = ref.watch(familyProvider);
+    final family = familyAsync.valueOrNull;
+    final inFamily = family != null;
+
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          inFamily ? Icons.groups : Icons.group_outlined,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        title: Text(inFamily ? family.name : 'Not in a family'),
+        subtitle: Text(inFamily
+            ? '${family.memberCount} '
+                '${family.memberCount == 1 ? 'member' : 'members'} · shared inventory'
+            : 'Create or join a family to share lists'),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: () => Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const FamilyScreen()),
         ),
       ),
     );

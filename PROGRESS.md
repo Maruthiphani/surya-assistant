@@ -595,9 +595,62 @@ are documented but account-gated (not executed here).
 ## Phase 7 — Family inventory & shared lists (CLAUDE.md §10)
 
 **Date:** 2026-11-02
-**Status:** **Designed, not started.** Added to CLAUDE.md (§1 decision + §7 Phase 7
-sub-phases 7a–7e + full §10 design). No code yet — do NOT begin until the Phase 4
-demo loop is confirmed on a real iPhone (§8).
+**Status:** **Designed (full §10); Phase 7a implemented.** Design added to CLAUDE.md
+(§1 decision + §7 sub-phases 7a–7e + §10). **7a (family + sharing foundation) is now
+built, `flutter analyze` clean, 34 tests pass.** 7b–7e not started. The §8 iPhone demo
+loop remains the gate before deeper family work.
+
+### Phase 7a — Family + sharing foundation (IMPLEMENTED 2026-11-02)
+**Additive only — no change to the single-user reminder/geofence/parsing flow.**
+
+Built (Dart, `app/lib`):
+- **`models/family.dart`** — `Family` data class (`id, name, ownerUid, memberUids,
+  inviteCode, createdAt`) + membership helpers (`isOwner/isMember/memberCount`), and
+  pure invite-code helpers: `generateInviteCode` (6 chars, alphabet excludes ambiguous
+  I/O/0/1) + `normalizeInviteCode`.
+- **`services/family_repository.dart`** — `FamilyRepository` interface +
+  `FirestoreFamilyRepository`: `watchFamily`, `createFamily`, `joinByCode`,
+  `leaveFamily`, `disbandFamily`, `clearStalePointer`. Uses batched writes across
+  `families/{id}`, the `familyCodes/{code}` lookup, and the `users/{uid}.familyId`
+  pointer. `FamilyException` carries user-safe messages.
+- **`models/user_profile.dart`** — added optional `familyId` (backward compatible;
+  null = solo user).
+- **`providers/providers.dart`** — `familyRepositoryProvider`, `familyIdProvider`
+  (from profile), `familyProvider` (live family stream). Riverpod's own `Family` type
+  hidden on import to avoid the name clash.
+- **`screens/family_screen.dart`** — create a family / join by code / show invite code
+  (copyable) + member list / leave (member) / disband (owner), plus a stale-pointer
+  recovery view when the owner disbanded the family.
+- **`screens/settings_screen.dart`** — new **Family** tile (shows family name + member
+  count, or "Not in a family") → opens FamilyScreen. Only entry point; home untouched.
+
+Design decisions (made for free-tier + offline, no backend dependency yet):
+- **Invite = short join code**, not email (no email infra; works without the
+  not-yet-deployed backend; testable on two devices).
+- **`familyCodes/{code}` lookup doc** lets a non-member resolve a code → familyId
+  without reading other families (membership rules forbid that). Join adds only the
+  caller to `memberUids`, enforced by a tight security rule (`hasAll` + `hasOnly`).
+- **One family per user** (enforced in repo/UI via `users/{uid}.familyId`).
+- **Owner disbands; members leave.** On disband, other members' pointers + the code doc
+  self-heal lazily (watchFamily → null → stale-pointer view; joining a dead code fails
+  cleanly) because client rules forbid writing other users' docs.
+
+Security rules (`firestore.rules`) — **additive; users/reminders rules unchanged**:
+- `families/{familyId}`: read/update for members; create only as sole-owner; join-update
+  may add only self; delete (disband) owner-only.
+- `familyCodes/{code}`: read for any signed-in user; create shape-checked; immutable.
+
+Verified: `flutter analyze` → no issues; `flutter test` → **34/34** (added
+`test/family_test.dart` — invite-code length/alphabet/determinism/normalize + Family
+membership helpers). Firestore-backed repo paths follow the existing
+User/ReminderRepository convention (exercised on device, not unit-tested).
+
+**Not yet done (developer / on-device):**
+- **Deploy the new rules**: `firebase deploy --only firestore:rules` (required before
+  create/join works against live Firestore).
+- **Two-device test** of invite → join → leave/disband (the 7a "done" criterion).
+- Member rows currently show "You"/"Owner" + a short uid (no shared display names yet —
+  a Phase 7b addition).
 
 ### What this adds
 Turns Surya from a personal reminder app into a **shared family assistant**: an owner
@@ -638,3 +691,327 @@ to avoid duplicate purchases and keep the family in sync. The family layer is **
 - Invite mechanism: short join code vs email invite (or both)?
 - Store detection for local/regional independents (e.g. a neighbourhood market) — Places
   coverage is patchy; decide the fallback when a named local store isn't discoverable.
+
+---
+
+### Phase 7b — Shared inventory + Personal/Family modes (IMPLEMENTED 2026-11-05)
+**Status:** Implemented; `flutter analyze` clean, **45 tests pass** (was 34; +9
+inventory, +2 family display-name). Additive — the single-user reminder/geofence/
+parsing flow is untouched. Not yet deployed to live Firestore / two-device tested.
+
+Covers the user's feature groups **1 (Smart Inventory)** and **2 (Personal & Family
+Sharing)**.
+
+Built (Dart, `app/lib`):
+- **`models/inventory_item.dart`** — `InventoryItem` (`name, state, quantity?,
+  locationQuery?, updatedBy, updatedByName, createdBy, lastUpdatedAt, createdAt`) +
+  `ItemState` (present|needed) with a `wire`/`fromWire` codec (unknown → needed so an
+  item never disappears). `dedupeKey` (trim+lowercase) powers the duplicate guard.
+  `locationQuery` is the hook Phase 7c/7d reuses for store matching.
+- **`services/inventory_repository.dart`** — `InventoryRepository` interface +
+  `FirestoreInventoryRepository`. An `InventoryScope` (personal `users/{uid}/items` vs
+  family `families/{fid}/items`) means add/edit/move/delete, the live listener, and the
+  one-tap Bought loop are written **once** and serve both inventories. `InventoryActor`
+  (uid + display name) stamps every write so items show "updated by".
+- **`providers/providers.dart`** — `inventoryRepositoryProvider`,
+  `inventoryModeProvider` (Personal/Family toggle), `inventoryScopeProvider` (resolves
+  mode → scope; null when Family-mode with no family), `inventoryActorProvider`,
+  `currentDisplayNameProvider` (Google name → email local-part → "Member"),
+  `inventoryItemsProvider` (live) + derived `presentItemsProvider` / `neededItemsProvider`.
+- **`screens/inventory_screen.dart`** — Personal⇄Family `SegmentedButton` (Family
+  disabled with a hint until you're in one), **Present / Need-to-Buy** tabs (live), add/
+  edit bottom sheet (name, quantity, where-to-buy hint, which list), per-item Edit/Delete
+  menu, and the move actions: **Bought** (needed→present, one tap — the anti-duplicate
+  loop) and **Need** (present→needed). Adding a needed item that's already in Present
+  warns before duplicating. "Updated 5m ago by <name>" shown for shared items.
+- **Display names**: `Family` gained a denormalised `memberNames` map +
+  `displayNameFor(uid)`; `FamilyRepository.createFamily`/`joinByCode` now take
+  `displayName` and write the caller's own entry (dotted field path on join so it can't
+  clobber others). Member rows show real names ("Asha (You)", "Owner" badge).
+- **Entry point**: an **Inventory** icon in the home app bar.
+
+Security rules (`firestore.rules`) — additive; users/reminders/family-doc rules unchanged:
+- `users/{uid}/items/{itemId}` — private to the owner (personal inventory).
+- `families/{familyId}/items/{itemId}` — read/write for members only; membership read
+  from the parent family doc via `get(...).data.memberUids` (the single source of truth,
+  never a client value). Owner/member parity for item data per §10 (all members equal for
+  product edits; only disband/remove-member stay owner-only).
+
+Verified (toolchain): `flutter analyze` → no issues; `flutter test` → **45/45**
+(`test/inventory_test.dart`: wire codec, create payload, copyWith, dedupe key, scope
+equality; `test/family_test.dart`: display-name resolution + id fallback). Firestore-
+backed repo paths follow the existing repo convention (exercised on device, not unit-
+tested).
+
+**Not yet done (developer / on-device):**
+- **Deploy the updated rules**: `firebase deploy --only firestore:rules` (required before
+  the items subcollections are writable against live Firestore).
+- **Two-device test**: shared add/move/Bought syncing live between two family members;
+  personal vs family isolation.
+- **Voice-based inventory updates** (group 1) — deferred: it needs the mic/composer wired
+  to inventory intents; parked until the Phase 4 voice loop is confirmed on device and
+  Phase 7c lands. Everything else in groups 1 & 2 is built.
+
+### Phase 7c/7d — Store-entry alerts + dynamic store detection (IMPLEMENTED 2026-11-05)
+**Status:** Implemented; `flutter analyze` clean, **55 tests pass** (was 45; +10 store
+matcher). Reuses the existing geofence + `/v1/nearby` machinery (§3/§9) — no fork, no
+LLM in the geofence/notification path. Live firing is a device task. Covers the user's
+feature group **3 (Smart Location-Based Shopping)**.
+
+Built (Dart, `app/lib`):
+- **`services/store_matcher.dart`** — pure category heuristics (CLAUDE.md §10 #6:
+  store-*likelihood*, NOT real stock). Tiny keyword dictionaries map an item →
+  `StoreCategory` (grocery/pharmacy/hardware/electronics/stationery; unknown → grocery).
+  `resolveTarget(item)` → the store to geofence: the item's explicit where-to-buy hint
+  (how local stores like "Sai Market" are supported, #4) else the category query.
+  `targetsFor` / `needsForTarget` / `labelFor` round out matching + display.
+- **`providers/providers.dart`** — refactored inventory providers so the screen and
+  background geofencing share listeners: `personalInventoryItemsProvider` +
+  `familyInventoryItemsProvider` are the sources; `inventoryItemsProvider` now picks one
+  by the UI toggle. New `storeMatcherProvider` and `geofenceNeedsProvider` (all currently
+  needed items across personal + family, each tagged with its `InventoryScope`) — the
+  latter drives store geofencing independent of the UI mode.
+- **`services/geofence_coordinator.dart`** — `syncActiveReminders` now also builds store
+  geofences (`_buildStoreSpecs`): one `/v1/nearby` query per distinct target, one
+  geofence per branch, id `store::<targetKey>::<index>`. Reminders keep OS-budget
+  priority; stores fill the remainder nearest-first. On a `store::` ENTER,
+  `_handleStoreEnter` recomputes the matching needed items live, and — only when
+  non-empty and not alerted for this store within a 30-min window (dedupe) — fires the
+  alert. `_handleAction` wires the notification "Bought" button to flip every matching
+  needed item → present in its own scope (one-tap clear).
+- **`services/notification_service.dart`** — new `showStoreNeeds(...)` on a dedicated
+  `surya_store_needs` channel: lists needed items ("need: rice, milk") plus an "Already
+  home: …" line (the anti-duplicate goal), with a **Bought** action button. Added
+  `setActionHandler` + `onDidReceiveNotificationResponse` routing.
+- **`screens/home_screen.dart`** — re-syncs geofences when `geofenceNeedsProvider`
+  changes (a new needed item starts monitoring matching stores immediately).
+
+How the group-3 checklist maps:
+- Detect grocery-store visit ✓ (store geofence) · Show Present + Need in the notification
+  ✓ · Dynamic reminders with no store name ✓ (category default) · Recognise local stores
+  e.g. Sai Market ✓ (explicit hint → text search) · Match items to stores ✓ (matcher) ·
+  Avoid repeat notifications ✓ (30-min per-store dedupe) · Only the member who enters is
+  alerted ✓ (fires on their device) · One-tap Bought from the notification ✓.
+
+Verified (toolchain): `flutter analyze` → no issues; `flutter test` → **55/55**
+(`test/store_matcher_test.dart`: categorize, hint-vs-category target, distinct targets,
+per-store selection, empty→none, labels). The coordinator/notification wiring follows the
+existing device-tested convention.
+
+**Not yet done (developer / on-device):**
+- **Live store alerts on a device** — needs a Places-enabled backend key + real/simulated
+  location (emulator `geo fix` is unreliable, per Phase 2/3 notes). The business logic is
+  unit-tested; firing is a device task.
+- **"Bought" action in the terminated state** — handled when the app is alive/foreground;
+  a background-isolate tap needs a top-level `@pragma('vm:entry-point')` handler +
+  `Firebase.initializeApp` in that isolate (device task).
+- **Dismiss-without-delete (checklist 3.8)** — swiping the OS notification already leaves
+  the Firestore product intact (per-device). *Persistent* per-member dismissal state
+  (`users/{uid}/dismissedAlerts`) is **Phase 7e**.
+- **Voice → inventory** ("remind me to buy rice" routing to a needed item) — still the
+  deferred voice-integration item from 7b; the manual Add-to-Need-to-Buy path already
+  drives store geofencing today.
+
+### Remaining Phase 7 sub-phases (sequence)
+- **7e** Per-member notification dismissal (`users/{uid}/dismissedAlerts`; trash icon
+  dismisses a member's OWN alert without deleting the shared product).
+
+### Beyond Phase 7 (new phases for the remaining feature groups — design before build)
+- **Phase 9** Multilingual Hanu (group 5) — Telugu/Hindi + mixed STT, language setting,
+  TTS, multilingual notifications, UI i18n. **Only remaining group.**
+
+---
+
+## Phase 8 — Time & recurring reminders (IMPLEMENTED 2026-11-05)
+
+**Status:** Implemented; `flutter analyze` clean, **74 tests pass** (was 55; +19), and the
+**Android debug APK builds** (new `flutter_timezone` plugin + scheduled-notification
+receivers merge). Live firing on a device is the remaining check. Covers the user's
+feature group **4 (Time & Recurring Reminders)**.
+
+This activates the first **time-triggered** path. Until now `remindAt` was recognised but
+"location is the only trigger" (§9). Phase 8 makes **time a real trigger** alongside
+location — a reminder can be location-based, time-based, or both.
+
+### New dependencies (companions of the already-approved `flutter_local_notifications`)
+- `timezone` (was transitive → now direct) and `flutter_timezone` — required by
+  `zonedSchedule`/`TZDateTime`. Added via `flutter pub add` (resolved timezone 0.10.1).
+
+### Built (Dart, `app/lib`)
+- **`models/recurrence.dart`** — `Recurrence {none,daily,weekly,monthly,yearly}` + wire
+  codec + pure `nextOccurrence(scheduled, {after})` (advances to the next future fire;
+  clamps Jan-31→Feb-28 monthly, Feb-29→Feb-28 yearly; past one-shot → null).
+- **`models/reminder.dart`** — added `recurrence` (default none, backward compatible) +
+  getters `isTimeScheduled` and `hasLocationTrigger` (a birthday has no location trigger).
+  `fromFirestore`/`toMap`/`copyWith` updated.
+- **`parsing/date_grammar.dart`** — pure recogniser (complement to TimeGrammar) for
+  absolute dates ("November 7", "7th of December", "12/25") and recurrence ("daily",
+  "weekly", "every Monday", "every year", "every November 7" → yearly), stripping them
+  from the text.
+- **`parsing/intent_parser.dart`** — runs DateGrammar after TimeGrammar, combines
+  date+time, and the **structural gate now treats time as a trigger**: RESOLVED on
+  task + (location OR time). A recurrence with no time → CLARIFY asking for the time
+  ("ask for missing date/time"). `ParsedIntent` + `ReminderComposer` carry `recurrence`.
+- **`services/reminder_scheduler.dart`** — `ReminderScheduler` interface +
+  `LocalReminderScheduler` (zonedSchedule + timezone). `sync()` schedules each active
+  time reminder at its next occurrence, cancels ones removed, and maps recurrence →
+  `DateTimeComponents` so the OS auto-repeats (yearly = `dateAndTime`). Ids in a high
+  range so they never collide with geofence notification ids.
+- **Wiring**: `reminderSchedulerProvider`; home bootstraps `init()` and re-`sync()`s on
+  reminder changes (+ `cancelAll()` on sign-out); the geofence coordinator now **skips
+  time-only reminders** (`!hasLocationTrigger`) so they don't try to geofence an empty
+  place. `screens/add_reminder_screen.dart` gained a **When** section (date + time picker,
+  clearable) and a **Repeat** dropdown, made the location optional, and validates "a place,
+  a time, or both" + "pick a time for a repeat". Home tiles show time/recurrence.
+
+### Native
+- `AndroidManifest.xml`: added `ScheduledNotificationReceiver` +
+  `ScheduledNotificationBootReceiver` (BOOT_COMPLETED / MY_PACKAGE_REPLACED) so scheduled
+  and recurring reminders survive app-kill/reboot. `RECEIVE_BOOT_COMPLETED` was already
+  present (Phase 2).
+
+### How the group-4 checklist maps
+- Date-based reminders (e.g. Nov 7 birthday) ✓ · Recurring annual birthday ✓ (yearly) ·
+  Daily/weekly/monthly recurring ✓ · Ask for missing date/time ✓ (parser CLARIFY +
+  save-time validation) · Verify scheduled notifications on real devices — **device task**.
+
+### Verified (toolchain)
+`flutter analyze` → no issues; `flutter test` → **74/74** (new: `recurrence_test.dart`,
+`date_grammar_test.dart`; updated `intent_parser_test.dart` for the time-as-trigger rule +
+birthday/recurrence cases). `flutter build apk --debug` → success.
+
+### Not yet done (developer / on-device)
+- **On-device firing** of scheduled + recurring notifications (incl. after reboot) — the
+  scheduling logic is unit-tested; actual delivery is a device task.
+- **Exact timing**: uses `inexactAllowWhileIdle` (no `SCHEDULE_EXACT_ALARM` needed, Play-
+  friendly) so fires land within an OS batching window. Switch to exact alarms if minute-
+  precise birthdays are required (adds a permission + Play justification).
+- **iOS**: scheduled local notifications work via the same API; confirm on a device.
+- **Voice path**: "remind me … November 7 every year" now parses locally to a yearly time
+  reminder end-to-end through the composer; confirm with real speech on-device.
+
+---
+
+## Phase 10 — My Ideas (IMPLEMENTED 2026-11-05)
+
+**Status:** Implemented; `flutter analyze` clean, **81 tests pass** (was 74; +7).
+Self-contained + additive — no change to reminders/inventory/family. Covers the user's
+feature group **6 (My Ideas)**. Not yet deployed to live Firestore.
+
+### Built (Dart, `app/lib`)
+- **`models/idea.dart`** — `Idea {id, title, description?, createdAt, updatedAt}` + a pure
+  `matches(query)` (case-insensitive over title + body; blank query matches all) powering
+  search, and `toCreateMap`.
+- **`services/idea_repository.dart`** — `IdeaRepository` interface +
+  `FirestoreIdeaRepository` over `users/{uid}/ideas` (watch newest-first, add, update,
+  delete).
+- **`providers/providers.dart`** — `ideaRepositoryProvider`, `ideasProvider` (live),
+  `ideaSearchProvider` (query state), `filteredIdeasProvider` (derived via `Idea.matches`).
+- **`screens/ideas_screen.dart`** — search bar, live list (title + snippet + created date),
+  add/edit bottom sheet, delete-with-confirm, empty/no-results states. A reusable
+  `_DictationField` adds a mic button to the title and details fields that dictates via the
+  existing Phase 4 `SpeechService` ("save ideas using voice commands").
+- **Entry point**: a **lightbulb** icon in the home app bar.
+
+### Security rules (`firestore.rules`)
+- `users/{uid}/ideas/{ideaId}` — private to the owner (additive; other rules unchanged).
+
+### How the group-6 checklist maps
+- Save ideas by voice ✓ (mic dictation on both fields) · Dedicated My Ideas section ✓ ·
+  Title + description + creation date ✓ · Edit + delete ✓ · Search ✓.
+
+### Verified (toolchain)
+`flutter analyze` → no issues; `flutter test` → **81/81** (`test/idea_test.dart`: search
+matching + create payload). Firestore repo exercised on device (project convention).
+
+### Not yet done (developer / on-device)
+- **Deploy rules**: `firebase deploy --only firestore:rules` (for the `ideas` subcollection).
+- **Voice dictation on a device** (emulator has no usable mic — same caveat as Phase 4).
+
+---
+
+## Feature-group status (user's six)
+1. Smart Inventory — **Phase 7b ✓** · 2. Personal & Family Sharing — **7b ✓** ·
+3. Smart Location-Based Shopping — **7c/7d ✓** · 4. Time & Recurring — **Phase 8 ✓** ·
+5. Multilingual Hanu — **Phase 9 (pending)** · 6. My Ideas — **Phase 10 ✓**.
+
+Cross-cutting developer tasks still outstanding: deploy updated `firestore.rules`; the
+on-device verification each phase notes (geofence/alerts/scheduled notifications/voice);
+live Gemini/Places key + Cloud Run deploy (open since Phase 3). 81/81 tests green.
+
+---
+
+## Phase 9 — Multilingual Hanu (Telugu/Hindi) (IMPLEMENTED 2026-11-05)
+
+**Status:** Implemented; `flutter analyze` clean, **87 tests pass** (was 81; +6), and the
+**Android debug APK builds** (new `flutter_tts` plugin merges). Covers the user's feature
+group **5 (Multilingual Hanu)**. Additive + backward compatible (absent language = English).
+
+### Design honesty (free-tier / on-device, no cloud translation)
+- **No machine translation.** UI chrome + spoken/notification scaffolding are **hand-
+  written** per language; **user content (task text, item names) is never translated** —
+  it's interpolated verbatim and echoed back as entered.
+- **STT/TTS quality is device-dependent.** We set the recognition/voice locale; actual
+  Telugu/Hindi + mixed-language support comes from the device's installed language packs.
+
+### New dependency
+- `flutter_tts` (on-device, free) — for Hanu speaking back. Added via `flutter pub add`.
+
+### Built (Dart, `app/lib`)
+- **`l10n/app_language.dart`** — `AppLanguage {english, hindi, telugu}` with `code`
+  (en/hi/te wire), `displayName` (in-script), and `localeId` (`en-US`/`hi-IN`/`te-IN`) for
+  both STT and TTS. `fromCode` defaults to English.
+- **`l10n/app_strings.dart`** — `AppStrings` interface + En/Hi/Te implementations for the
+  high-visibility surface (settings, home, voice capture, confirmations, reminder
+  notification). Confirmations/notifications are methods taking `{task}`/`{place}` so user
+  content passes through untranslated.
+- **`models/user_profile.dart` + `user_repository.dart`** — `preferredLanguage`
+  (backward compatible) + `setPreferredLanguage`.
+- **`services/tts_service.dart`** — `TtsService` interface + `FlutterTtsService`
+  (best-effort: sets the locale if a voice exists, else speaks default; never throws).
+- **`services/speech_service.dart`** — `listen()` gained a `localeId` (via
+  `SpeechListenOptions`) so recognition runs in the chosen language.
+- **`providers/providers.dart`** — `appLanguageProvider` (from profile), `stringsProvider`
+  (live `AppStrings`), `ttsServiceProvider`.
+
+### Wiring
+- **Settings**: a **Language** picker (English / हिन्दी / తెలుగు) writing immediately to the
+  profile — the whole app re-renders live via `stringsProvider`. Settings labels localized.
+- **Voice capture**: passes the preferred `localeId` to STT; title/prompt/listening/
+  continue localized.
+- **Add reminder**: the confirmation is built from localized strings **and spoken aloud**
+  via TTS in the chosen language (replaces the old English-only backend confirm here).
+- **Geofence notification**: `showReminderTriggered` now takes `AppStrings` and renders the
+  title/body in the user's language.
+- **Home**: the "Speak" FAB + empty state localized; TTS warmed up in bootstrap.
+
+### How the group-5 checklist maps
+- Telugu voice recognition ✓ · Hindi voice recognition ✓ · Telugu-English / Hindi-English
+  mixed speech ✓ (device-engine dependent, locale set) · Language selection in Settings ✓ ·
+  Hanu speaking back in Telugu/Hindi ✓ (TTS) · Multilingual notifications ✓ (reminder
+  trigger) · Translate UI labels ✓ **for the core surface** (incremental for the rest).
+
+### Verified (toolchain)
+`flutter analyze` → no issues; `flutter test` → **87/87** (`test/multilingual_test.dart`:
+locale codec + mapping, every language supplies every non-blank string, user content
+interpolated verbatim, languages genuinely differ). `flutter build apk --debug` → success.
+
+### Not yet done (developer / on-device)
+- **On-device STT/TTS in Telugu/Hindi** — needs the device's language packs installed;
+  verify real recognition (incl. code-switching) + spoken output on a device.
+- **Full UI translation** — the core chrome is localized; inventory/ideas/paywall/family
+  screens + the store-needs alert remain English. Extending is mechanical: add keys to
+  `AppStrings` (the completeness test enforces all three languages) and swap literals.
+- **Backend `/v1/confirm`** stays English; the app now speaks its own localized
+  confirmation, so this is only relevant if we later want server-side localized copy.
+
+---
+
+### Feature-group status — ALL SIX DELIVERED (toolchain-verified)
+1. Smart Inventory — **7b ✓** · 2. Personal & Family Sharing — **7b ✓** ·
+3. Smart Location-Based Shopping — **7c/7d ✓** · 4. Time & Recurring — **8 ✓** ·
+5. Multilingual Hanu — **9 ✓** · 6. My Ideas — **10 ✓**. **87/87 tests green.**
+
+Cross-cutting developer tasks still outstanding (unchanged, device/account-gated):
+deploy updated `firestore.rules`; on-device verification of geofence/store-alerts/
+scheduled-notifications/voice/STT/TTS; live Gemini/Places key + Cloud Run deploy.

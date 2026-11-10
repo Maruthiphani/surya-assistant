@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../l10n/app_language.dart';
 import '../models/user_profile.dart';
 
 /// Reads/writes the `users/{uid}` profile document (CLAUDE.md §4).
@@ -18,6 +19,9 @@ abstract class UserRepository {
   /// Update the default geofence radius used to pre-fill new reminders
   /// (Settings, Phase 5).
   Future<void> setDefaultRadius(String uid, int radiusMeters);
+
+  /// Update the preferred language Hanu uses (Settings, Phase 9).
+  Future<void> setPreferredLanguage(String uid, AppLanguage language);
 }
 
 class FirestoreUserRepository implements UserRepository {
@@ -60,6 +64,14 @@ class FirestoreUserRepository implements UserRepository {
     // merge:true so we only touch the radius field, leaving the name intact.
     return _doc(uid).set(
       {'defaultRadiusMeters': radiusMeters},
+      SetOptions(merge: true),
+    );
+  }
+
+  @override
+  Future<void> setPreferredLanguage(String uid, AppLanguage language) {
+    return _doc(uid).set(
+      {'preferredLanguage': language.code},
       SetOptions(merge: true),
     );
   }

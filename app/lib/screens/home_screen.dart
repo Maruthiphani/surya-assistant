@@ -7,6 +7,8 @@ import '../providers/providers.dart';
 import '../services/location_service.dart';
 import 'add_reminder_screen.dart';
 import 'debug_screen.dart';
+import 'ideas_screen.dart';
+import 'inventory_screen.dart';
 import 'location_permission_screen.dart';
 import 'settings_screen.dart';
 import 'voice_capture_screen.dart';
@@ -39,6 +41,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final notifications = ref.read(notificationServiceProvider);
     await notifications.init();
     await notifications.requestPermission();
+
+    // Time-based scheduling (Phase 8): ready the timezone DB + channel.
+    await ref.read(reminderSchedulerProvider).init();
+
+    // Text-to-speech (Phase 9): warm up so confirmations can be spoken.
+    await ref.read(ttsServiceProvider).init();
 
     // Push (FCM): init + register this device's token for the signed-in user.
     final messaging = ref.read(messagingServiceProvider);
@@ -98,6 +106,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (uid != null) {
       await ref.read(messagingServiceProvider).clearTokenForUser(uid);
     }
+    await ref.read(reminderSchedulerProvider).cancelAll();
     await ref.read(subscriptionServiceProvider).logOut();
     await ref.read(authServiceProvider).signOut();
   }
@@ -116,11 +125,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ref.watch(userProfileProvider).valueOrNull?.assistantName ??
             UserProfile.defaultAssistantName;
 
-    // Keep geofences in sync with the active reminders as they change.
+    // Keep geofences + scheduled notifications in sync with the reminders as
+    // they change (Phase 8 adds the scheduler alongside the geofence sync).
     ref.listen(remindersProvider, (_, next) {
       if (next.hasValue) {
         ref.read(geofenceCoordinatorProvider).syncActiveReminders();
+        ref.read(reminderSchedulerProvider).sync(
+              next.value!,
+              assistantName: ref.read(userProfileProvider).valueOrNull
+                      ?.assistantName ??
+                  UserProfile.defaultAssistantName,
+            );
       }
+    });
+
+    // Re-sync store geofences when the shared/personal Need-to-Buy list changes
+    // (Phase 7c): a new needed item should start monitoring matching stores.
+    ref.listen(geofenceNeedsProvider, (_, __) {
+      ref.read(geofenceCoordinatorProvider).syncActiveReminders();
     });
 
     return Scaffold(
@@ -132,6 +154,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             icon: const Icon(Icons.add),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const AddReminderScreen()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Inventory',
+            icon: const Icon(Icons.inventory_2_outlined),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const InventoryScreen()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'My Ideas',
+            icon: const Icon(Icons.lightbulb_outline),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const IdeasScreen()),
             ),
           ),
           IconButton(
@@ -160,7 +196,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           MaterialPageRoute(builder: (_) => const VoiceCaptureScreen()),
         ),
         icon: const Icon(Icons.mic),
-        label: const Text('Speak'),
+        label: Text(ref.watch(stringsProvider).speak),
       ),
       body: Column(
         children: [
@@ -299,12 +335,35 @@ class _ReminderTile extends ConsumerWidget {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// "at Costco", "Nov 7 · 9:00 AM (Yearly)", or both lines combined.
+  String _subtitle() {
+    final parts = <String>[];
+    if (reminder.hasLocationTrigger && reminder.locationName.isNotEmpty) {
+      parts.add('at ${reminder.locationName}');
+    }
+    if (reminder.isTimeScheduled) {
+      final t = reminder.remindAt!;
+      final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+      final ampm = t.hour < 12 ? 'AM' : 'PM';
+      final m = t.minute.toString().padLeft(2, '0');
+      const months = [
+        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      ];
+      final repeat =
+          reminder.recurrence.repeats ? ' (${reminder.recurrence.label})' : '';
+      parts.add('${months[t.month - 1]} ${t.day} · $h:$m $ampm$repeat');
+    }
+    return parts.isEmpty ? 'Reminder' : parts.join(' · ');
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final timeOnly = reminder.isTimeScheduled && !reminder.hasLocationTrigger;
     return ListTile(
-      leading: const Icon(Icons.place_outlined),
+      leading: Icon(timeOnly ? Icons.schedule : Icons.place_outlined),
       title: Text(reminder.task),
-      subtitle: Text('at ${reminder.locationName}'),
+      subtitle: Text(_subtitle()),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -371,12 +430,13 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-class _EmptyState extends StatelessWidget {
+class _EmptyState extends ConsumerWidget {
   const _EmptyState();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final s = ref.watch(stringsProvider);
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -386,10 +446,10 @@ class _EmptyState extends StatelessWidget {
             Icon(Icons.notifications_none,
                 size: 64, color: theme.colorScheme.primary),
             const SizedBox(height: 16),
-            Text('No reminders yet', style: theme.textTheme.titleMedium),
+            Text(s.noRemindersTitle, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              'Tap "Add reminder" to create your first location reminder.',
+              s.noRemindersBody,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium,
             ),

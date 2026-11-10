@@ -65,6 +65,7 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
       _transcript = '';
     });
     await speech.listen(
+      localeId: ref.read(appLanguageProvider).localeId,
       onResult: (text, isFinal) {
         setState(() {
           _transcript = text;
@@ -114,8 +115,9 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final s = ref.watch(stringsProvider);
     return Scaffold(
-      appBar: AppBar(title: const Text('Speak a reminder')),
+      appBar: AppBar(title: Text(s.voiceTitle)),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -141,9 +143,9 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
               const SizedBox(height: 16),
               Text(
                 _listening
-                    ? 'Listening…'
+                    ? s.voiceListening
                     : _speechAvailable
-                        ? 'Tap the mic and say your reminder'
+                        ? s.voicePrompt
                         : 'Mic unavailable — type below',
                 style: theme.textTheme.titleMedium,
                 textAlign: TextAlign.center,
@@ -180,7 +182,7 @@ class _VoiceCaptureScreenState extends ConsumerState<VoiceCaptureScreen> {
                         height: 18,
                         child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.arrow_forward),
-                label: const Text('Continue'),
+                label: Text(s.voiceContinue),
                 style: FilledButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 14),
                   minimumSize: const Size.fromHeight(0),

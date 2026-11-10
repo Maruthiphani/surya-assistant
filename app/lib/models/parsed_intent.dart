@@ -1,3 +1,4 @@
+import 'recurrence.dart';
 import 'reminder.dart';
 
 /// Result of the deterministic on-device parser (CLAUDE.md §9).
@@ -16,6 +17,7 @@ class ParsedIntent {
     this.locationText,
     this.locationType,
     this.remindAt,
+    this.recurrence = Recurrence.none,
     this.clarifyPrompt,
   });
 
@@ -26,9 +28,12 @@ class ParsedIntent {
   final String? locationText;
   final LocationType? locationType;
 
-  /// Recognised time, if any. Stored to avoid mis-parsing "5 PM" as a place;
-  /// NOT acted upon yet (location remains the trigger — CLAUDE.md §9).
+  /// Recognised fire time, if any. From Phase 8 this is an actual trigger
+  /// (time-based scheduling), not just a parse safeguard.
   final DateTime? remindAt;
+
+  /// Recognised recurrence, if any (Phase 8).
+  final Recurrence recurrence;
 
   /// Set when [outcome] is [clarify].
   final String? clarifyPrompt;
@@ -44,7 +49,8 @@ class ParsedIntent {
           {String? task,
           String? locationText,
           LocationType? locationType,
-          DateTime? remindAt}) =>
+          DateTime? remindAt,
+          Recurrence recurrence = Recurrence.none}) =>
       ParsedIntent(
         outcome: ParseOutcome.clarify,
         rawText: raw,
@@ -53,5 +59,6 @@ class ParsedIntent {
         locationText: locationText,
         locationType: locationType,
         remindAt: remindAt,
+        recurrence: recurrence,
       );
 }

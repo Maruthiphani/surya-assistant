@@ -17,6 +17,78 @@ service cloud.firestore {
         allow read, write: if request.auth != null
                            && request.auth.uid == userId;
       }
+
+      // users/{uid}/items/{itemId} — the user's PERSONAL inventory (Phase 7b).
+      // Private to the owner, mirroring the shared family inventory below.
+      match /items/{itemId} {
+        allow read, write: if request.auth != null
+                           && request.auth.uid == userId;
+      }
+
+      // users/{uid}/ideas/{ideaId} — the user's private "My Ideas" (Phase 10).
+      match /ideas/{ideaId} {
+        allow read, write: if request.auth != null
+                           && request.auth.uid == userId;
+      }
+    }
+
+    // families/{familyId} — shared family group (CLAUDE.md §10, Phase 7a).
+    // Membership (the `memberUids` array) is the access gate. Everything a
+    // family shares (inventory in Phase 7b) will live under this document.
+    match /families/{familyId} {
+      // Members can read the family. A missing doc (resource == null) is also
+      // readable by any signed-in user so a member whose family was disbanded
+      // gets a clean "doesn't exist" (null) instead of a permission error —
+      // this drives the stale-pointer recovery view.
+      allow read: if request.auth != null
+                  && (resource == null
+                      || request.auth.uid in resource.data.memberUids);
+
+      // The creator must be the sole initial member and the owner.
+      allow create: if request.auth != null
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.memberUids == [request.auth.uid];
+
+      // Updates are allowed for existing members (rename, leave), OR for a new
+      // member joining — who may only add THEMSELVES to memberUids and must
+      // leave the name/owner untouched.
+      allow update: if request.auth != null && (
+        request.auth.uid in resource.data.memberUids
+        || (
+          request.resource.data.ownerUid == resource.data.ownerUid
+          && request.resource.data.name == resource.data.name
+          && request.resource.data.memberUids.hasAll(resource.data.memberUids)
+          && request.resource.data.memberUids
+               .hasOnly(resource.data.memberUids.concat([request.auth.uid]))
+        )
+      );
+
+      // Only the owner can disband (delete) the family.
+      allow delete: if request.auth != null
+                    && request.auth.uid == resource.data.ownerUid;
+
+      // families/{familyId}/items/{itemId} — the SHARED inventory (Phase 7b).
+      // Any member may read/write (add/edit/move/delete); non-members denied.
+      // Membership is read from the parent family doc — the single source of
+      // truth (CLAUDE.md §10), never a client-supplied value.
+      match /items/{itemId} {
+        allow read, write: if request.auth != null
+          && request.auth.uid in
+             get(/databases/$(database)/documents/families/$(familyId))
+               .data.memberUids;
+      }
+    }
+
+    // familyCodes/{code} — invite-code → familyId lookup so a non-member can
+    // resolve a code to join. Codes are random and reveal only a familyId.
+    match /familyCodes/{code} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasOnly(['familyId'])
+                    && request.resource.data.familyId is string;
+      // Immutable once created; stale codes for disbanded families are harmless
+      // (joining re-checks the family exists).
+      allow update, delete: if false;
     }
   }
 }

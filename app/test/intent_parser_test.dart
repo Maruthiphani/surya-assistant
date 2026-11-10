@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:surya/models/parsed_intent.dart';
+import 'package:surya/models/recurrence.dart';
 import 'package:surya/models/reminder.dart';
 import 'package:surya/parsing/intent_parser.dart';
 
@@ -44,24 +45,55 @@ void main() {
     });
   });
 
-  group('Accuracy — time is NOT a location', () {
-    test('call Mom at 5 PM -> time recognised, clarify for location', () {
+  group('Accuracy — time is a trigger, not a location (Phase 8)', () {
+    test('call Mom at 5 PM -> RESOLVED time reminder, no location', () {
       final r = parse('Remind me to call Mom at 5 PM.');
-      expect(r.outcome, ParseOutcome.clarify);
+      expect(r.outcome, ParseOutcome.resolved);
       expect(r.task, 'call mom');
       expect(r.locationText, isNull); // 5 PM is NOT treated as a place
       expect(r.remindAt, isNotNull);
       expect(r.remindAt!.hour, 17);
+      expect(r.recurrence, Recurrence.none);
     });
 
-    test('tomorrow morning ... trash -> time recognised, clarify for location', () {
+    test('tomorrow morning ... trash -> RESOLVED time reminder', () {
       final r = parse('Remind me tomorrow morning to take out the trash.');
-      expect(r.outcome, ParseOutcome.clarify);
+      expect(r.outcome, ParseOutcome.resolved);
       expect(r.task, 'take out the trash');
       expect(r.locationText, isNull);
       expect(r.remindAt, isNotNull);
       expect(r.remindAt!.day, 16);
       expect(r.remindAt!.hour, 8); // "morning"
+    });
+  });
+
+  group('Date & recurrence (Phase 8)', () {
+    test('birthday: on November 7 every year -> yearly time reminder', () {
+      final r = parse(
+          'Remind me to wish mom happy birthday on November 7 every year.');
+      expect(r.outcome, ParseOutcome.resolved);
+      expect(r.task, 'wish mom happy birthday');
+      expect(r.recurrence, Recurrence.yearly);
+      expect(r.remindAt, isNotNull);
+      expect(r.remindAt!.month, 11);
+      expect(r.remindAt!.day, 7);
+    });
+
+    test('recurrence without a time -> CLARIFY asks for the time', () {
+      final r = parse('Remind me to take my pills daily.');
+      expect(r.outcome, ParseOutcome.clarify);
+      expect(r.task, 'take my pills');
+      expect(r.recurrence, Recurrence.daily);
+      expect(r.remindAt, isNull);
+      expect(r.clarifyPrompt, contains('time'));
+    });
+
+    test('date + explicit time combine', () {
+      final r = parse('Remind me to call the bank on December 1 at 10 am.');
+      expect(r.outcome, ParseOutcome.resolved);
+      expect(r.remindAt!.month, 12);
+      expect(r.remindAt!.day, 1);
+      expect(r.remindAt!.hour, 10);
     });
   });
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
+import '../models/recurrence.dart';
 import '../models/reminder.dart';
 import '../models/user_profile.dart';
 import '../providers/providers.dart';
@@ -36,6 +37,7 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
   late final TextEditingController _radiusController;
   late bool _anyBranch;
   DateTime? _remindAt;
+  late Recurrence _recurrence;
   bool _busy = false;
 
   @override
@@ -53,6 +55,7 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
         text: (i?.radiusMeters ?? defaultRadius).toString());
     _anyBranch = i == null || i.locationType == LocationType.query;
     _remindAt = i?.remindAt;
+    _recurrence = i?.recurrence ?? Recurrence.none;
   }
 
   @override
@@ -63,27 +66,45 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
     super.dispose();
   }
 
-  String get _assistantName =>
-      ref.read(userProfileProvider).valueOrNull?.assistantName ??
-      UserProfile.defaultAssistantName;
-
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     final uid = ref.read(currentUidProvider);
     if (uid == null) return;
 
-    // Free-tier cap (CLAUDE.md §1): block a new active reminder past the limit
-    // unless the user is Pro, and offer the upgrade.
-    if (!await _ensureWithinFreeLimit()) return;
-
     final task = _taskController.text.trim();
     final location = _locationController.text.trim();
     final radius = int.tryParse(_radiusController.text.trim()) ?? 500;
 
+    // A reminder needs at least one trigger: a place or a time (Phase 8).
+    if (location.isEmpty && _remindAt == null) {
+      _snack('Add a place, a time, or both.');
+      return;
+    }
+    // Ask for the missing time when a repeat was chosen without one.
+    if (_recurrence.repeats && _remindAt == null) {
+      _snack('Pick a date/time for a ${_recurrence.label.toLowerCase()} reminder.');
+      return;
+    }
+
+    // Free-tier cap (CLAUDE.md §1): block a new active reminder past the limit
+    // unless the user is Pro, and offer the upgrade.
+    if (!await _ensureWithinFreeLimit()) return;
+
     setState(() => _busy = true);
     try {
       Reminder reminder;
-      if (_anyBranch) {
+      if (location.isEmpty) {
+        // Time-only reminder (e.g. a birthday): no location trigger at all.
+        reminder = Reminder(
+          task: task,
+          locationName: '',
+          locationType: LocationType.query,
+          radiusMeters: radius,
+          remindAt: _remindAt,
+          recurrence: _recurrence,
+          status: ReminderStatus.active,
+        );
+      } else if (_anyBranch) {
         // Dynamic: no coordinates; branches discovered at runtime. Works offline.
         reminder = Reminder(
           task: task,
@@ -92,6 +113,7 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
           locationQuery: location,
           radiusMeters: radius,
           remindAt: _remindAt,
+          recurrence: _recurrence,
           status: ReminderStatus.active,
         );
       } else {
@@ -107,12 +129,20 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
           lng: chosen.lng,
           radiusMeters: radius,
           remindAt: _remindAt,
+          recurrence: _recurrence,
           status: ReminderStatus.active,
         );
       }
 
       await ref.read(reminderRepositoryProvider).addReminder(uid, reminder);
-      final message = await _confirmationMessage(task, reminder.locationName);
+      final s = ref.read(stringsProvider);
+      final message = reminder.locationName.isEmpty
+          ? s.confirmTime(task, _remindAtLabel)
+          : s.confirmReach(task, reminder.locationName);
+      // Hanu speaks the confirmation in the chosen language (Phase 9).
+      await ref
+          .read(ttsServiceProvider)
+          .speak(message, ref.read(appLanguageProvider));
       if (!mounted) return;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
@@ -171,22 +201,38 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
     );
   }
 
-  /// Friendly confirmation using the assistant name; falls back locally offline.
-  Future<String> _confirmationMessage(String task, String locationName) async {
-    try {
-      return await ref
-          .read(aiServiceProvider)
-          .confirm(task, locationName, _assistantName);
-    } catch (_) {
-      return 'Got it — I\'ll remind you to $task when you reach $locationName.';
-    }
-  }
-
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  /// Pick a date, then a time, into [_remindAt].
+  Future<void> _pickWhen() async {
+    final now = DateTime.now();
+    final base = _remindAt ?? now;
+    final date = await showDatePicker(
+      context: context,
+      initialDate: base.isBefore(now) ? now : base,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 5),
+    );
+    if (date == null || !mounted) return;
+    final time = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: base.hour, minute: base.minute),
+    );
+    if (!mounted) return;
+    setState(() {
+      _remindAt = DateTime(
+        date.year,
+        date.month,
+        date.day,
+        time?.hour ?? 9,
+        time?.minute ?? 0,
+      );
+    });
   }
 
   @override
@@ -212,6 +258,9 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
                     (v == null || v.trim().isEmpty) ? 'Enter a task' : null,
               ),
               const SizedBox(height: 16),
+              Text('Where (optional)',
+                  style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
               TextFormField(
                 controller: _locationController,
                 textCapitalization: TextCapitalization.words,
@@ -221,8 +270,7 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
                       _anyBranch ? 'e.g. Costco, pharmacy' : 'e.g. Costco, Cumming',
                   border: const OutlineInputBorder(),
                 ),
-                validator: (v) =>
-                    (v == null || v.trim().isEmpty) ? 'Enter a location' : null,
+                // Optional: a reminder may be time-only (validated in _save).
               ),
               const SizedBox(height: 8),
               SwitchListTile(
@@ -234,28 +282,54 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
                     ? 'Fires at any nearby branch of this chain/category.'
                     : 'Fires only at this one specific place.'),
               ),
+              const SizedBox(height: 20),
+              Text('When (optional)',
+                  style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Card(
+                margin: EdgeInsets.zero,
+                child: ListTile(
+                  leading: const Icon(Icons.schedule),
+                  title: Text(_remindAt == null ? 'No time set' : _remindAtLabel),
+                  subtitle: Text(_remindAt == null
+                      ? 'Tap to remind at a date/time'
+                      : _recurrence.label),
+                  trailing: _remindAt == null
+                      ? const Icon(Icons.chevron_right)
+                      : IconButton(
+                          tooltip: 'Clear time',
+                          icon: const Icon(Icons.clear),
+                          onPressed: () => setState(() {
+                            _remindAt = null;
+                            _recurrence = Recurrence.none;
+                          }),
+                        ),
+                  onTap: _pickWhen,
+                ),
+              ),
               if (_remindAt != null) ...[
-                const SizedBox(height: 4),
-                Row(
-                  children: [
-                    const Icon(Icons.schedule, size: 18),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Heard a time ($_remindAtLabel) — time-based reminders are '
-                        'coming soon; this fires by location for now.',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
+                const SizedBox(height: 12),
+                DropdownButtonFormField<Recurrence>(
+                  initialValue: _recurrence,
+                  decoration: const InputDecoration(
+                    labelText: 'Repeat',
+                    border: OutlineInputBorder(),
+                  ),
+                  items: Recurrence.values
+                      .map((r) => DropdownMenuItem(
+                          value: r, child: Text(r.label)))
+                      .toList(),
+                  onChanged: (r) =>
+                      setState(() => _recurrence = r ?? Recurrence.none),
                 ),
               ],
-              const SizedBox(height: 12),
+              const SizedBox(height: 20),
               TextFormField(
                 controller: _radiusController,
                 keyboardType: TextInputType.number,
                 decoration: const InputDecoration(
                   labelText: 'Radius (metres)',
+                  helperText: 'Used for location reminders.',
                   border: OutlineInputBorder(),
                 ),
                 validator: (v) {
@@ -285,11 +359,16 @@ class _AddReminderScreenState extends ConsumerState<AddReminderScreen> {
     );
   }
 
+  static const _monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+
   String get _remindAtLabel {
     final t = _remindAt!;
     final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
     final ampm = t.hour < 12 ? 'AM' : 'PM';
     final m = t.minute.toString().padLeft(2, '0');
-    return '$h:$m $ampm';
+    return '${_monthNames[t.month - 1]} ${t.day} · $h:$m $ampm';
   }
 }

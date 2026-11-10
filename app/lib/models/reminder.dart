@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'recurrence.dart';
+
 /// Lifecycle of a location reminder.
 ///
 /// Stored in Firestore as the lowercase enum name (e.g. "active"). Only
@@ -52,6 +54,7 @@ class Reminder {
     this.lng,
     this.radiusMeters = 500,
     this.remindAt,
+    this.recurrence = Recurrence.none,
     this.status = ReminderStatus.active,
     this.createdAt,
     this.triggeredAt,
@@ -75,9 +78,13 @@ class Reminder {
 
   final int radiusMeters; // default 500 m (§4)
 
-  /// Parsed time, if the command mentioned one. RECOGNISED to avoid mis-parsing
-  /// "5 PM" as a place; NOT acted on yet (location is still the trigger — §9).
+  /// Scheduled fire time, if the reminder is time-based (Phase 8). For a
+  /// recurring reminder this is the anchor occurrence; the scheduler computes
+  /// the next future fire from it + [recurrence].
   final DateTime? remindAt;
+
+  /// How a time-based reminder repeats (Phase 8). [Recurrence.none] = one-shot.
+  final Recurrence recurrence;
 
   final ReminderStatus status;
 
@@ -86,6 +93,19 @@ class Reminder {
   final DateTime? completedAt;
 
   bool get isDynamic => locationType == LocationType.query;
+
+  /// Fires on a schedule (Phase 8) — has a time.
+  bool get isTimeScheduled => remindAt != null;
+
+  /// Fires on arrival — has a usable location trigger. A time-only reminder
+  /// (e.g. a birthday) has none, so the geofence path skips it.
+  bool get hasLocationTrigger {
+    if (locationType == LocationType.specific) {
+      return lat != null && lng != null;
+    }
+    return (locationQuery?.trim().isNotEmpty ?? false) ||
+        locationName.trim().isNotEmpty;
+  }
 
   factory Reminder.fromFirestore(DocumentSnapshot<Map<String, dynamic>> doc) {
     final data = doc.data() ?? const <String, dynamic>{};
@@ -112,6 +132,7 @@ class Reminder {
       lng: lng,
       radiusMeters: (data['radiusMeters'] as num?)?.toInt() ?? 500,
       remindAt: (data['remindAt'] as Timestamp?)?.toDate(),
+      recurrence: Recurrence.fromName(data['recurrence'] as String?),
       status: ReminderStatus.fromName(data['status'] as String?),
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       triggeredAt: (data['triggeredAt'] as Timestamp?)?.toDate(),
@@ -134,6 +155,7 @@ class Reminder {
     if (lat != null) map['lat'] = lat;
     if (lng != null) map['lng'] = lng;
     if (remindAt != null) map['remindAt'] = Timestamp.fromDate(remindAt!);
+    if (recurrence != Recurrence.none) map['recurrence'] = recurrence.name;
     return map;
   }
 
@@ -148,6 +170,7 @@ class Reminder {
     double? lng,
     int? radiusMeters,
     DateTime? remindAt,
+    Recurrence? recurrence,
     ReminderStatus? status,
     DateTime? createdAt,
     DateTime? triggeredAt,
@@ -164,6 +187,7 @@ class Reminder {
       lng: lng ?? this.lng,
       radiusMeters: radiusMeters ?? this.radiusMeters,
       remindAt: remindAt ?? this.remindAt,
+      recurrence: recurrence ?? this.recurrence,
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
       triggeredAt: triggeredAt ?? this.triggeredAt,

@@ -1,5 +1,7 @@
 import '../models/parsed_intent.dart';
+import '../models/recurrence.dart';
 import '../models/reminder.dart';
+import 'date_grammar.dart';
 import 'place_dictionaries.dart';
 import 'time_grammar.dart';
 
@@ -50,10 +52,13 @@ class IntentParser {
       return ParsedIntent.unparseable(input);
     }
 
-    // 1) Extract + remove any time expression.
+    // 1) Extract + remove any time-of-day/relative expression, then any
+    //    absolute date / recurrence phrase (Phase 8).
     final tm = TimeGrammar.extract(rest, clock);
-    final remindAt = tm.remindAt;
-    final work = tm.cleanedText;
+    final dm = DateGrammar.extract(tm.cleanedText, clock);
+    final recurrence = dm.recurrence;
+    final remindAt = _combine(dm.date, tm.remindAt, recurrence, clock);
+    final work = dm.cleanedText;
 
     // 2) Split on the earliest location connector.
     int connIdx = -1;
@@ -97,8 +102,10 @@ class IntentParser {
 
     final hasTask = task.isNotEmpty;
     final hasLoc = locationText != null;
+    final hasTime = remindAt != null;
 
-    if (hasTask && hasLoc) {
+    // A trigger is a location OR a time (Phase 8: time is now a real trigger).
+    if (hasTask && (hasLoc || hasTime)) {
       return ParsedIntent(
         outcome: ParseOutcome.resolved,
         rawText: input,
@@ -106,6 +113,7 @@ class IntentParser {
         locationText: locationText,
         locationType: locType,
         remindAt: remindAt,
+        recurrence: recurrence,
       );
     }
     if (hasLoc && !hasTask) {
@@ -115,19 +123,43 @@ class IntentParser {
         locationText: locationText,
         locationType: locType,
         remindAt: remindAt,
+        recurrence: recurrence,
       );
     }
-    if (hasTask && !hasLoc) {
-      final suffix =
-          remindAt != null ? ' (time-only reminders are coming soon)' : '';
+    // A recurrence/date with no time-of-day → ask for the time (Phase 8:
+    // "ask for missing date or time").
+    if (hasTask && recurrence.repeats && !hasTime) {
       return ParsedIntent.clarify(
         input,
-        'Where should I remind you to $task?$suffix',
+        'What time should I remind you to $task?',
         task: task,
-        remindAt: remindAt,
+        recurrence: recurrence,
+      );
+    }
+    if (hasTask && !hasLoc && !hasTime) {
+      return ParsedIntent.clarify(
+        input,
+        'Where or when should I remind you to $task?',
+        task: task,
+        recurrence: recurrence,
       );
     }
     return ParsedIntent.unparseable(input);
+  }
+
+  /// Combine a date anchor (from DateGrammar) with a time-of-day (from
+  /// TimeGrammar) into one fire time. Date wins the calendar day; time wins the
+  /// clock. Date-only → default 9:00. A past one-shot date rolls to next year.
+  DateTime? _combine(
+      DateTime? date, DateTime? time, Recurrence recurrence, DateTime now) {
+    if (date == null) return time; // time-only (or nothing)
+    final hour = time?.hour ?? 9;
+    final min = time?.minute ?? 0;
+    var dt = DateTime(date.year, date.month, date.day, hour, min);
+    if (!recurrence.repeats && dt.isBefore(now)) {
+      dt = DateTime(date.year + 1, date.month, date.day, hour, min);
+    }
+    return dt;
   }
 
   String _cap(String s) =>

@@ -11,9 +11,13 @@ abstract class SpeechService {
   bool get isListening;
 
   /// Start listening; [onResult] fires with partial and final transcripts.
+  /// [localeId] (e.g. "hi-IN", "te-IN") selects the recognition language
+  /// (Phase 9); null uses the device default. Mixed-language recognition is up
+  /// to the device engine for that locale.
   Future<void> listen({
     required void Function(String text, bool isFinal) onResult,
     void Function()? onDone,
+    String? localeId,
   });
 
   Future<void> stop();
@@ -44,6 +48,7 @@ class SttSpeechService implements SpeechService {
   Future<void> listen({
     required void Function(String text, bool isFinal) onResult,
     void Function()? onDone,
+    String? localeId,
   }) async {
     if (!_available) {
       final ok = await init();
@@ -57,6 +62,7 @@ class SttSpeechService implements SpeechService {
       listenOptions: SpeechListenOptions(
         partialResults: true,
         cancelOnError: true,
+        localeId: localeId,
         listenFor: const Duration(seconds: 30),
         pauseFor: const Duration(seconds: 3),
       ),
